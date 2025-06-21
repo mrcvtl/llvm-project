@@ -3545,7 +3545,7 @@ bool isKnownNonZero(const Value *V, const APInt &DemandedElts,
     return true;
 
   if (const Value *Stripped = stripNullTest(V))
-    return isKnownNonZero(Stripped, DemandedElts, Q, Depth + 1);
+    return isKnownNonZero(Stripped, DemandedElts, Q, Depth);
 
   return false;
 }
