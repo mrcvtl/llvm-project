@@ -39,11 +39,14 @@ template <typename T>
 static llvm::ImmutableSet<T> join(llvm::ImmutableSet<T> A,
                                   llvm::ImmutableSet<T> B,
                                   typename llvm::ImmutableSet<T>::Factory &F) {
-  if (A.getHeight() < B.getHeight())
-    std::swap(A, B);
-  for (const T &E : B)
-    A = F.add(A, E);
-  return A;
+  auto *RootA = A.getRootWithoutRetain();
+  auto *RootB = B.getRootWithoutRetain();
+
+  auto Merge = [](const T *V1, const T *V2) -> T { return V1 ? *V1 : *V2; };
+
+  auto *MergedRoot = F.getTreeFactory()->merge(RootA, RootB, Merge);
+  return llvm::ImmutableSet<T>(
+      F.getTreeFactory()->getCanonicalTree(MergedRoot));
 }
 
 /// Describes the strategy for joining two `ImmutableMap` instances, primarily
@@ -63,34 +66,30 @@ enum class JoinKind {
 };
 
 /// Computes the key-wise union of two ImmutableMaps.
-// TODO(opt): This key-wise join is a performance bottleneck. A more
-// efficient merge could be implemented using a Patricia Trie or HAMT
-// instead of the current AVL-tree-based ImmutableMap.
 template <typename K, typename V, typename Joiner>
 static llvm::ImmutableMap<K, V>
 join(const llvm::ImmutableMap<K, V> &A, const llvm::ImmutableMap<K, V> &B,
      typename llvm::ImmutableMap<K, V>::Factory &F, Joiner JoinValues,
      JoinKind Kind) {
-  if (A.getHeight() < B.getHeight())
-    return join(B, A, F, JoinValues, Kind);
+  using ValueType = typename llvm::ImmutableMap<K, V>::value_type;
 
-  // For each element in B, join it with the corresponding element in A
-  // (or with an empty value if it doesn't exist in A).
-  llvm::ImmutableMap<K, V> Res = A;
-  for (const auto &Entry : B) {
-    const K &Key = Entry.first;
-    const V &ValB = Entry.second;
-    Res = F.add(Res, Key, JoinValues(A.lookup(Key), &ValB));
-  }
-  if (Kind == JoinKind::Symmetric) {
-    for (const auto &Entry : A) {
-      const K &Key = Entry.first;
-      const V &ValA = Entry.second;
-      if (!B.contains(Key))
-        Res = F.add(Res, Key, JoinValues(&ValA, nullptr));
-    }
-  }
-  return Res;
+  auto Merge = [&](const ValueType *V1, const ValueType *V2) -> ValueType {
+    const K &Key = V1 ? V1->first : V2->first;
+    const V *Val1 = V1 ? &V1->second : nullptr;
+    const V *Val2 = V2 ? &V2->second : nullptr;
+
+    if (Kind != JoinKind::Symmetric && Val2 == nullptr)
+      return V1 ? *V1 : *V2;
+
+    return {Key, JoinValues(Val1, Val2)};
+  };
+
+  auto *RootA = A.getRootWithoutRetain();
+  auto *RootB = B.getRootWithoutRetain();
+  auto *MergedRoot = F.getTreeFactory()->merge(RootA, RootB, Merge, true, true);
+
+  return llvm::ImmutableMap<K, V>(
+      F.getTreeFactory()->getCanonicalTree(MergedRoot));
 }
 } // namespace clang::lifetimes::internal::utils
 
